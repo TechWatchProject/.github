@@ -1,0 +1,31 @@
+{
+  "_comment": "Org-wide standard labels for TechWatchProject. Names are stable contracts: changing one means updating the sync mapping in github_project_sync.py and re-applying labels org-wide. Apply with ci/apply_standard_labels.py.",
+  "labels": [
+    {"name": "priority:p0", "color": "b60205", "description": "P0 — critical; drop everything"},
+    {"name": "priority:p1", "color": "d93f0b", "description": "P1 — high priority; this sprint"},
+    {"name": "priority:p2", "color": "fbca04", "description": "P2 — medium priority; this quarter"},
+    {"name": "priority:p3", "color": "0e8a16", "description": "P3 — low priority; backlog"},
+
+    {"name": "severity:critical", "color": "b60205", "description": "Production-down or data-loss class"},
+    {"name": "severity:high",     "color": "d93f0b", "description": "Customer-impacting; needs prompt fix"},
+    {"name": "severity:medium",   "color": "fbca04", "description": "Real bug but workaround exists"},
+    {"name": "severity:low",      "color": "0e8a16", "description": "Cosmetic, edge-case, low blast radius"},
+
+    {"name": "type:bug",     "color": "d73a4a", "description": "Bug — something broken"},
+    {"name": "type:feature", "color": "a2eeef", "description": "Feature — new capability"},
+    {"name": "type:task",    "color": "7057ff", "description": "Task — chore/refactor/cleanup"},
+    {"name": "type:docs",    "color": "0075ca", "description": "Docs — documentation work"},
+    {"name": "type:ops",     "color": "5319e7", "description": "Ops — deploys, infra, runbooks"},
+
+    {"name": "goal:datalake-migration",  "color": "1d76db", "description": "Goal — datalake migration"},
+    {"name": "goal:extension-stability", "color": "1d76db", "description": "Goal — extension stability"},
+
+    {"name": "tech-debt",       "color": "cfd3d7", "description": "Code-quality cleanup"},
+    {"name": "flaky-test",      "color": "fbca04", "description": "Test reliability issue"},
+    {"name": "incident",        "color": "b60205", "description": "Came from an incident or postmortem"},
+    {"name": "regression",      "color": "d93f0b", "description": "Was working before; broken now"},
+    {"name": "good-first-issue","color": "7057ff", "description": "Onboarding-friendly"},
+    {"name": "help-wanted",     "color": "008672", "description": "Open for collaboration"},
+    {"name": "blocked",         "color": "e11d21", "description": "Blocked on something external"}
+  ]
+}
