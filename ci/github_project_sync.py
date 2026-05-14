@@ -25,7 +25,6 @@ import os
 import subprocess
 import sys
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from typing import Any, Optional
 
 VALID_OWNER_TYPES = {"organization", "user"}
@@ -224,23 +223,31 @@ def get_date_field_id(fields: dict[str, dict[str, Any]], field_name: str) -> str
     return field["id"]
 
 
-def fetch_item_labels(node_id: str) -> list[str]:
-    """Fetch labels of an issue or PR by its global node ID."""
+def fetch_item_metadata(node_id: str) -> tuple[list[str], Optional[str]]:
+    """Fetch labels + createdAt of an issue or PR by its global node ID."""
     query = """
     query($id: ID!) {
       node(id: $id) {
         __typename
-        ... on Issue { labels(first: 50) { nodes { name } } }
-        ... on PullRequest { labels(first: 50) { nodes { name } } }
+        ... on Issue {
+          createdAt
+          labels(first: 50) { nodes { name } }
+        }
+        ... on PullRequest {
+          createdAt
+          labels(first: 50) { nodes { name } }
+        }
       }
     }
     """
     data = graphql(query, {"id": node_id})
     node = data["data"]["node"]
     if not node:
-        return []
+        return [], None
     label_nodes = node.get("labels", {}).get("nodes", []) if isinstance(node, dict) else []
-    return [lab["name"] for lab in label_nodes if "name" in lab]
+    labels = [lab["name"] for lab in label_nodes if "name" in lab]
+    created = node.get("createdAt") if isinstance(node, dict) else None
+    return labels, created
 
 
 def update_single_select(
@@ -391,16 +398,22 @@ def main() -> None:
             f"{config.event_name}.{config.event_action}"
         )
 
-    if config.date_field and config.event_action in ("opened", "ready_for_review"):
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        print(f"Setting {config.date_field} to {today}")
+    # Pull labels + createdAt in one round-trip; used by both date capture
+    # and label-driven field mapping below.
+    labels, created_at = fetch_item_metadata(config.item_node_id)
+
+    # Date posted: always reflect the issue/PR's createdAt (canonical, not
+    # "today"). Runs on every event the workflow triggers, so items added by
+    # drift-sync or by hand also get a date the next time anything happens to
+    # the issue. update_date is idempotent for identical inputs.
+    if config.date_field and created_at:
+        date_str = created_at[:10]
+        print(f"Setting {config.date_field} to {date_str} (from createdAt)")
         date_field_id = get_date_field_id(fields, config.date_field)
-        update_date(project_id, item_id, date_field_id, today)
-        print("Date updated")
+        update_date(project_id, item_id, date_field_id, date_str)
 
     # Label-driven field mapping. Runs on every event the workflow triggers,
     # so adding a `priority:p0` label after the fact updates the board.
-    labels = fetch_item_labels(config.item_node_id)
     if labels:
         print(f"Mapping labels: {labels}")
         apply_label_fields(project_id, item_id, fields, labels)
