@@ -28,6 +28,11 @@ on:
         required: false
         type: string
         default: ""
+      guidelines_url:
+        description: "Optional URL to a workflow doc — included in the mirror body so the assignee can read the guidelines."
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -78,10 +83,15 @@ jobs:
           TARGET_REPO: ${{ inputs.target_repo }}
           TITLE_PREFIX: ${{ inputs.title_prefix }}
           TARGET_LABELS: ${{ inputs.target_labels }}
+          GUIDELINES_URL: ${{ inputs.guidelines_url }}
         run: |
           {
             echo "Mirrors $SOURCE_URL"
             echo ""
+            if [ -n "$GUIDELINES_URL" ]; then
+              echo "**Workflow guide:** $GUIDELINES_URL — read this before working the issue."
+              echo ""
+            fi
             echo "## Cross-link workflow"
             echo ""
             echo "- [x] Source issue linked above"
