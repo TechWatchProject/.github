@@ -1,0 +1,112 @@
+name: mirror-issue (reusable)
+
+# Reusable workflow: file an issue in a target repo that mirrors the source
+# issue from the caller repo. Embeds the source URL (auto-creates the GitHub
+# bidirectional cross-link), prepends a workflow checklist, and comments back
+# on the source issue with the mirror URL.
+#
+# Auth: uses the twp-project-sync GitHub App (PROJECT_APP_ID / PROJECT_APP_PRIVATE_KEY).
+# Per-repo callers should `secrets: inherit` to forward the org secret through.
+#
+# Idempotent: if a mirror with the same source URL already exists in the
+# target repo, the workflow is a no-op.
+
+on:
+  workflow_call:
+    inputs:
+      target_repo:
+        description: "owner/repo to create the mirror issue in"
+        required: true
+        type: string
+      title_prefix:
+        description: "Prefix prepended to the mirror's title (e.g. '[recruiter#N] ')"
+        required: false
+        type: string
+        default: ""
+      target_labels:
+        description: "Comma-separated labels to apply to the mirror issue"
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    if: github.event.issue != null
+    steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.PROJECT_APP_ID }}
+          private-key: ${{ secrets.PROJECT_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - name: Check for existing mirror
+        id: dedupe
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          TARGET_REPO: ${{ inputs.target_repo }}
+          SOURCE_URL: ${{ github.event.issue.html_url }}
+        run: |
+          existing=$(gh issue list \
+            --repo "$TARGET_REPO" \
+            --state all \
+            --search "in:body \"$SOURCE_URL\"" \
+            --json url \
+            --jq '.[0].url // empty')
+          if [ -n "$existing" ]; then
+            echo "Mirror already exists at $existing — skipping create."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "mirror_url=$existing" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create mirror issue and back-link
+        if: steps.dedupe.outputs.skip == 'false'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          SOURCE_REPO: ${{ github.repository }}
+          SOURCE_URL: ${{ github.event.issue.html_url }}
+          SOURCE_NUMBER: ${{ github.event.issue.number }}
+          SOURCE_TITLE: ${{ github.event.issue.title }}
+          SOURCE_BODY: ${{ github.event.issue.body }}
+          TARGET_REPO: ${{ inputs.target_repo }}
+          TITLE_PREFIX: ${{ inputs.title_prefix }}
+          TARGET_LABELS: ${{ inputs.target_labels }}
+        run: |
+          {
+            echo "Mirrors $SOURCE_URL"
+            echo ""
+            echo "## Cross-link workflow"
+            echo ""
+            echo "- [x] Source issue linked above"
+            echo "- [ ] Investigation + work tracked here (this is the ledger)"
+            echo "- [ ] Fix PR(s) merged"
+            echo "- [ ] Source issue updated with fix summary"
+            echo "- [ ] Source issue closed"
+            echo ""
+            echo "---"
+            echo ""
+            echo "## Original report"
+            echo ""
+            printf '%s\n' "$SOURCE_BODY"
+          } > body.md
+
+          create_args=(--repo "$TARGET_REPO"
+                      --title "${TITLE_PREFIX}${SOURCE_TITLE}"
+                      --body-file body.md)
+          if [ -n "$TARGET_LABELS" ]; then
+            create_args+=(--label "$TARGET_LABELS")
+          fi
+
+          mirror_url=$(gh issue create "${create_args[@]}")
+          echo "Created mirror: $mirror_url"
+
+          gh issue comment "$SOURCE_NUMBER" \
+            --repo "$SOURCE_REPO" \
+            --body "Tracked in $mirror_url"
