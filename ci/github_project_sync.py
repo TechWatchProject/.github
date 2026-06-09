@@ -216,10 +216,15 @@ def get_field_and_option(
     return FieldOption(field_id=field["id"], option_id=options[option_name])
 
 
-def get_date_field_id(fields: dict[str, dict[str, Any]], field_name: str) -> str:
+def get_date_field_id(
+    fields: dict[str, dict[str, Any]], field_name: str
+) -> Optional[str]:
+    """Return the field ID if `field_name` exists on the project as a Date
+    field, else None. Missing date fields are optional — the caller is
+    expected to skip the date-write when this returns None."""
     field = fields.get(field_name)
     if field is None or field.get("data_type") != "DATE":
-        raise SystemExit(f"Date field '{field_name}' not found in project")
+        return None
     return field["id"]
 
 
@@ -405,12 +410,20 @@ def main() -> None:
     # Date posted: always reflect the issue/PR's createdAt (canonical, not
     # "today"). Runs on every event the workflow triggers, so items added by
     # drift-sync or by hand also get a date the next time anything happens to
-    # the issue. update_date is idempotent for identical inputs.
+    # the issue. update_date is idempotent for identical inputs. If the date
+    # field is configured but missing from the board, skip with a warning —
+    # same graceful-skip pattern as the label-driven field mapping below.
     if config.date_field and created_at:
-        date_str = created_at[:10]
-        print(f"Setting {config.date_field} to {date_str} (from createdAt)")
         date_field_id = get_date_field_id(fields, config.date_field)
-        update_date(project_id, item_id, date_field_id, date_str)
+        if date_field_id is None:
+            print(
+                f"  skip date update: project has no Date field "
+                f"named '{config.date_field}'"
+            )
+        else:
+            date_str = created_at[:10]
+            print(f"Setting {config.date_field} to {date_str} (from createdAt)")
+            update_date(project_id, item_id, date_field_id, date_str)
 
     # Label-driven field mapping. Runs on every event the workflow triggers,
     # so adding a `priority:p0` label after the fact updates the board.
