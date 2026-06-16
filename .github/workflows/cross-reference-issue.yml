@@ -66,6 +66,9 @@ jobs:
   cross-reference:
     runs-on: ubuntu-latest
     if: github.event.issue != null
+    concurrency:
+      group: cross-reference-${{ github.repository }}-${{ github.event.issue.number }}-${{ inputs.target_repo }}
+      cancel-in-progress: false
     steps:
       - name: Resolve GitHub App token scope
         id: repo-scope
