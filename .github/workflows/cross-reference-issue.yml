@@ -1,0 +1,269 @@
+name: cross-reference-issue (reusable)
+
+# Reusable workflow: cross-reference a source issue to a target repo issue.
+#
+# This is intentionally narrower than project-board automation. It only handles
+# issue-to-issue handoff between repos:
+#
+#   1. Find an existing target issue for this source issue, or create one.
+#   2. Add a clear agent handoff comment on the source issue.
+#   3. Add a clear agent handoff comment on the target issue.
+#
+# Auth: uses a dedicated cross-repo issue handoff GitHub App
+# (CROSS_REFERENCE_APP_ID / CROSS_REFERENCE_APP_PRIVATE_KEY secrets). Install that app
+# only on the source + target repos it should touch. Per-repo callers should
+# `secrets: inherit`.
+
+on:
+  workflow_call:
+    inputs:
+      target_repo:
+        description: "owner/repo to create or find the linked issue in"
+        required: true
+        type: string
+      title_prefix:
+        description: "Prefix prepended to the target issue title, e.g. '[recruiter#N] '"
+        required: false
+        type: string
+        default: ""
+      target_labels:
+        description: "Comma-separated labels to apply when creating the target issue"
+        required: false
+        type: string
+        default: ""
+      guidelines_url:
+        description: "Optional workflow guide URL included in both handoff comments"
+        required: false
+        type: string
+        default: ""
+      source_role:
+        description: "Short description of the source repo's role"
+        required: false
+        type: string
+        default: "intake"
+      target_role:
+        description: "Short description of the target repo's role"
+        required: false
+        type: string
+        default: "engineering ledger"
+      handoff_note:
+        description: "One sentence telling agents where to work"
+        required: false
+        type: string
+        default: "Agents should do investigation, PR tracking, and closure work on the linked target issue."
+    secrets:
+      CROSS_REFERENCE_APP_ID:
+        description: "Dedicated cross-reference GitHub App ID"
+        required: true
+      CROSS_REFERENCE_APP_PRIVATE_KEY:
+        description: "Dedicated cross-reference GitHub App private key"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  cross-reference:
+    runs-on: ubuntu-latest
+    if: github.event.issue != null
+    steps:
+      - name: Resolve GitHub App token scope
+        id: repo-scope
+        env:
+          SOURCE_REPO: ${{ github.repository }}
+          TARGET_REPO: ${{ inputs.target_repo }}
+        run: |
+          set -euo pipefail
+
+          source_owner="${SOURCE_REPO%%/*}"
+          source_name="${SOURCE_REPO#*/}"
+          target_owner="${TARGET_REPO%%/*}"
+          target_name="${TARGET_REPO#*/}"
+
+          if [ "$source_owner" != "$target_owner" ]; then
+            echo "Source and target repositories must be under the same owner for one GitHub App installation token."
+            echo "source=$SOURCE_REPO target=$TARGET_REPO"
+            exit 1
+          fi
+
+          {
+            echo "owner=$source_owner"
+            echo "repositories<<EOF"
+            printf '%s\n' "$source_name" "$target_name" | sort -u
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.CROSS_REFERENCE_APP_ID }}
+          private-key: ${{ secrets.CROSS_REFERENCE_APP_PRIVATE_KEY }}
+          owner: ${{ steps.repo-scope.outputs.owner }}
+          repositories: ${{ steps.repo-scope.outputs.repositories }}
+          permission-issues: write
+
+      - name: Resolve or create target issue
+        id: target
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          SOURCE_REPO: ${{ github.repository }}
+          SOURCE_URL: ${{ github.event.issue.html_url }}
+          SOURCE_NUMBER: ${{ github.event.issue.number }}
+          SOURCE_TITLE: ${{ github.event.issue.title }}
+          SOURCE_BODY: ${{ github.event.issue.body }}
+          TARGET_REPO: ${{ inputs.target_repo }}
+          TITLE_PREFIX: ${{ inputs.title_prefix }}
+          TARGET_LABELS: ${{ inputs.target_labels }}
+          GUIDELINES_URL: ${{ inputs.guidelines_url }}
+          SOURCE_ROLE: ${{ inputs.source_role }}
+          TARGET_ROLE: ${{ inputs.target_role }}
+          HANDOFF_NOTE: ${{ inputs.handoff_note }}
+        run: |
+          set -euo pipefail
+
+          target_url=$(gh issue list \
+            --repo "$TARGET_REPO" \
+            --state all \
+            --search "in:body \"$SOURCE_URL\"" \
+            --json url \
+            --jq '.[0].url // empty')
+
+          if [ -z "$target_url" ] && [ -n "$TITLE_PREFIX" ]; then
+            target_url=$(gh issue list \
+              --repo "$TARGET_REPO" \
+              --state all \
+              --search "in:title \"$TITLE_PREFIX\"" \
+              --json url \
+              --jq '.[0].url // empty')
+          fi
+
+          if [ -n "$target_url" ]; then
+            echo "Found target issue: $target_url"
+            echo "created=false" >> "$GITHUB_OUTPUT"
+            echo "target_url=$target_url" >> "$GITHUB_OUTPUT"
+            echo "target_number=${target_url##*/}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          {
+            echo "Source: $SOURCE_URL"
+            echo ""
+            echo "**Agent handoff:** $HANDOFF_NOTE"
+            echo ""
+            echo "- Source repo role: $SOURCE_ROLE"
+            echo "- Target repo role: $TARGET_ROLE"
+            if [ -n "$GUIDELINES_URL" ]; then
+              echo "- Workflow guide: $GUIDELINES_URL"
+            fi
+            echo ""
+            echo "## Cross-link workflow"
+            echo ""
+            echo "- [x] Source issue linked above"
+            echo "- [x] Target issue created or found"
+            echo "- [ ] Investigation and work tracked here"
+            echo "- [ ] Fix PR(s) merged"
+            echo "- [ ] Source issue updated with fix summary"
+            echo "- [ ] Source issue closed"
+            echo ""
+            echo "---"
+            echo ""
+            echo "## Original report"
+            echo ""
+            printf '%s\n' "$SOURCE_BODY"
+          } > body.md
+
+          create_args=(--repo "$TARGET_REPO"
+                      --title "${TITLE_PREFIX}${SOURCE_TITLE}"
+                      --body-file body.md)
+          if [ -n "$TARGET_LABELS" ]; then
+            create_args+=(--label "$TARGET_LABELS")
+          fi
+
+          target_url=$(gh issue create "${create_args[@]}")
+          echo "Created target issue: $target_url"
+          echo "created=true" >> "$GITHUB_OUTPUT"
+          echo "target_url=$target_url" >> "$GITHUB_OUTPUT"
+          echo "target_number=${target_url##*/}" >> "$GITHUB_OUTPUT"
+
+      - name: Add source handoff comment
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          SOURCE_REPO: ${{ github.repository }}
+          SOURCE_NUMBER: ${{ github.event.issue.number }}
+          TARGET_URL: ${{ steps.target.outputs.target_url }}
+          TARGET_REPO: ${{ inputs.target_repo }}
+          GUIDELINES_URL: ${{ inputs.guidelines_url }}
+          HANDOFF_NOTE: ${{ inputs.handoff_note }}
+        run: |
+          set -euo pipefail
+
+          marker="<!-- twp-cross-reference target=$TARGET_URL -->"
+          existing=$(gh issue view "$SOURCE_NUMBER" \
+            --repo "$SOURCE_REPO" \
+            --json comments \
+            --jq ".comments[] | select(.body | contains(\"$marker\")) | .url" \
+            | head -n 1)
+
+          if [ -n "$existing" ]; then
+            echo "Source handoff comment already exists: $existing"
+            exit 0
+          fi
+
+          {
+            echo "$marker"
+            echo "**Cross-repo handoff:** $TARGET_URL"
+            echo ""
+            echo "$HANDOFF_NOTE"
+            echo ""
+            echo "For agents: treat this source issue as intake. Continue the engineering ledger in $TARGET_REPO at the linked issue, and comment back here only when status changes or the fix ships."
+            if [ -n "$GUIDELINES_URL" ]; then
+              echo ""
+              echo "Workflow guide: $GUIDELINES_URL"
+            fi
+          } > source-comment.md
+
+          gh issue comment "$SOURCE_NUMBER" \
+            --repo "$SOURCE_REPO" \
+            --body-file source-comment.md
+
+      - name: Add target handoff comment
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          SOURCE_REPO: ${{ github.repository }}
+          SOURCE_URL: ${{ github.event.issue.html_url }}
+          TARGET_REPO: ${{ inputs.target_repo }}
+          TARGET_NUMBER: ${{ steps.target.outputs.target_number }}
+          GUIDELINES_URL: ${{ inputs.guidelines_url }}
+          HANDOFF_NOTE: ${{ inputs.handoff_note }}
+        run: |
+          set -euo pipefail
+
+          marker="<!-- twp-cross-reference source=$SOURCE_URL -->"
+          existing=$(gh issue view "$TARGET_NUMBER" \
+            --repo "$TARGET_REPO" \
+            --json comments \
+            --jq ".comments[] | select(.body | contains(\"$marker\")) | .url" \
+            | head -n 1)
+
+          if [ -n "$existing" ]; then
+            echo "Target handoff comment already exists: $existing"
+            exit 0
+          fi
+
+          {
+            echo "$marker"
+            echo "**Source intake issue:** $SOURCE_URL"
+            echo ""
+            echo "$HANDOFF_NOTE"
+            echo ""
+            echo "For agents: keep investigation notes, PR links, and final-state decisions on this target issue. Update $SOURCE_REPO only with cross-reference, shipped-fix, or close-back comments."
+            if [ -n "$GUIDELINES_URL" ]; then
+              echo ""
+              echo "Workflow guide: $GUIDELINES_URL"
+            fi
+          } > target-comment.md
+
+          gh issue comment "$TARGET_NUMBER" \
+            --repo "$TARGET_REPO" \
+            --body-file target-comment.md
